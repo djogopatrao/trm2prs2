@@ -1,0 +1,5 @@
+pyoxigraph
+owlready2
+pandas
+regex
+openpyxl
