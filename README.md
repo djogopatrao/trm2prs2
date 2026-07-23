@@ -50,3 +50,59 @@ casos `FUZZY` (Fase 2 pendente) e 1 caso de controle categórico (`LEGACY-10`,
 que usa URI de opção da ontologia e não é afetado pelo patch). Quando a Fase 2
 for implementada, os adaptadores de `run_tests.py` precisarão ser estendidos
 para exercitar o modo fuzzy e esses casos passam a ser executados.
+
+## Medições de tempo de execução das queries
+
+`run_tests.py` cronometra **apenas** a chamada `store.query(query)` de cada
+caso — a montagem do `Store`, das listas de termos e da string da query fica
+fora da medição. Use `python3 run_tests.py --tabela-markdown` para gerar a
+tabela abaixo automaticamente.
+
+A coluna **tempo (fuzzy)** está marcada como "—" em todas as linhas: o
+matching fuzzy (Fase 2 do `MODIFICATION_PLAN.md`) ainda não foi implementado,
+então não há query fuzzy para cronometrar. Quando a Fase 2 for implementada,
+esta seção deve ser regerada para popular essa coluna.
+
+> Nota: são medições de uma única execução, em milissegundos, num `Store`
+> pyoxigraph em memória minúsculo (uma tripla por caso) — servem como
+> referência relativa entre os casos, não como benchmark de produção. A
+> primeira query executada em cada processo Python tende a ter overhead de
+> "aquecimento" (carregamento/JIT interno do pyoxigraph) e pode aparecer
+> mais lenta do que as demais.
+
+| numero do teste | tempo (não fuzzy) | tempo (fuzzy) |
+|---|---|---|
+| LEGACY-01 | 0.318 ms | — |
+| LEGACY-02 | 0.126 ms | — |
+| LEGACY-03 | 0.107 ms | — |
+| LEGACY-04 | 0.129 ms | — |
+| LEGACY-05 | 0.097 ms | — |
+| LEGACY-06 | 0.089 ms | — |
+| LEGACY-07 | 0.554 ms | — |
+| LEGACY-08 | 0.245 ms | — |
+| LEGACY-09 | 0.133 ms | — |
+| LEGACY-10 | — | — |
+| CASE-01 | 0.084 ms | — |
+| CASE-02 | 0.076 ms | — |
+| CASE-03 | 0.071 ms | — |
+| CASE-04 | 0.104 ms | — |
+| CASE-05 | 0.086 ms | — |
+| CASE-06 | 0.104 ms | — |
+| CASE-07 | 0.304 ms | — |
+| CASE-08 | 0.223 ms | — |
+| CASE-09 | 0.171 ms | — |
+| CASE-10 | 0.086 ms | — |
+| FUZZY-01 | — | — |
+| FUZZY-02 | — | — |
+| FUZZY-03 | — | — |
+| FUZZY-04 | — | — |
+| FUZZY-05 | — | — |
+| FUZZY-06 | — | — |
+| FUZZY-07 | — | — |
+| FUZZY-08 | — | — |
+| FUZZY-09 | — | — |
+| FUZZY-10 | — | — |
+| FUZZY-11 | — | — |
+| FUZZY-12 | — | — |
+| FUZZY-13 | — | — |
+| FUZZY-14 | — | — |

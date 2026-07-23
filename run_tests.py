@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 import pyoxigraph as ox
@@ -158,21 +159,27 @@ def _base_func_name(funcao_alvo: str) -> str:
     return funcao_alvo.split(" (")[0].split(" / ")[0].strip()
 
 
-def run_case(tc: dict) -> tuple[str, str]:
-    """Executa um caso e devolve (status, detalhe). status: PASS|FAIL|SKIP|ERROR."""
+def run_case(tc: dict) -> tuple[str, str, float | None]:
+    """Executa um caso e devolve (status, detalhe, tempo_query_ms).
+
+    status: PASS|FAIL|SKIP|ERROR. tempo_query_ms é None quando nenhuma query
+    chegou a ser executada (SKIP, ou erro antes de store.query()). Apenas a
+    chamada store.query(query) é cronometrada — a montagem do Store, das
+    listas de termos e da string da query ficam de fora da medição.
+    """
     if tc.get("modo_avaliado") == "fuzzy":
-        return "SKIP", "fuzzy ainda não implementado (Fase 2 do MODIFICATION_PLAN.md)"
+        return "SKIP", "fuzzy ainda não implementado (Fase 2 do MODIFICATION_PLAN.md)", None
     if tc.get("tipo_filtro") == "categorico":
-        return "SKIP", "campo categórico (URI de opção) — fora do escopo do patch de case-insensitive"
+        return "SKIP", "campo categórico (URI de opção) — fora do escopo do patch de case-insensitive", None
 
     expected = tc.get("resultado_esperado")
     if not isinstance(expected, bool):
-        return "SKIP", f"resultado_esperado não é booleano ({expected!r}) — requer revisão manual"
+        return "SKIP", f"resultado_esperado não é booleano ({expected!r}) — requer revisão manual", None
 
     base_func = _base_func_name(tc["funcao_alvo"])
     adapter = ADAPTERS.get(base_func)
     if adapter is None:
-        return "SKIP", f"sem adaptador de teste para {tc['funcao_alvo']!r}"
+        return "SKIP", f"sem adaptador de teste para {tc['funcao_alvo']!r}", None
 
     term_lists: dict = {}
     icd_map: dict = {}
@@ -182,9 +189,16 @@ def run_case(tc: dict) -> tuple[str, str]:
         where_lines = adapter(tc, store, term_lists, icd_map)
         query = f"{PREFIX}\nASK {{\n  VALUES ?registro {{ <{REGISTRO.value}> }}\n" \
                 + "\n".join(where_lines) + "\n}"
+    except Exception as exc:  # noqa: BLE001 — erro do gerador, antes de qualquer query
+        return "ERROR", f"{type(exc).__name__}: {exc}", None
+
+    t0 = time.perf_counter()
+    try:
         ask_result = bool(store.query(query))
-    except Exception as exc:  # noqa: BLE001 — reportar qualquer falha do gerador/engine
-        return "ERROR", f"{type(exc).__name__}: {exc}"
+    except Exception as exc:  # noqa: BLE001 — erro do próprio pyoxigraph ao executar
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        return "ERROR", f"{type(exc).__name__}: {exc}", elapsed_ms
+    elapsed_ms = (time.perf_counter() - t0) * 1000
 
     # Para filtros de exclusão, resultado_esperado=True significa "o termo
     # pertence à lista, logo o registro seria excluído" — o que corresponde a
@@ -193,8 +207,8 @@ def run_case(tc: dict) -> tuple[str, str]:
     actual_membership = (not ask_result) if invert else ask_result
 
     if actual_membership == expected:
-        return "PASS", f"esperado={expected} obtido={actual_membership}"
-    return "FAIL", f"esperado={expected} obtido={actual_membership}"
+        return "PASS", f"esperado={expected} obtido={actual_membership}", elapsed_ms
+    return "FAIL", f"esperado={expected} obtido={actual_membership}", elapsed_ms
 
 
 def main() -> int:
@@ -203,6 +217,10 @@ def main() -> int:
                          help="Executa apenas os casos dessa categoria.")
     parser.add_argument("--casos", default="TEST_CASES.json",
                          help="Caminho do arquivo de casos de teste.")
+    parser.add_argument("--tabela-markdown", action="store_true",
+                         help="Ao final, imprime a tabela de tempos em Markdown "
+                              "(numero do teste | tempo (não fuzzy) | tempo (fuzzy)) "
+                              "pronta para colar no README.md.")
     args = parser.parse_args()
 
     data = json.loads(Path(args.casos).read_text(encoding="utf-8"))
@@ -211,11 +229,14 @@ def main() -> int:
         casos = [tc for tc in casos if tc["categoria"] == args.categoria]
 
     tally = {"PASS": 0, "FAIL": 0, "SKIP": 0, "ERROR": 0}
+    resultados = []
     for tc in casos:
-        status, detalhe = run_case(tc)
+        status, detalhe, tempo_ms = run_case(tc)
         tally[status] += 1
+        resultados.append((tc, status, detalhe, tempo_ms))
         marker = {"PASS": "✓", "FAIL": "✗", "SKIP": "·", "ERROR": "!"}[status]
-        print(f"[{marker}] {tc['id']:<12} {status:<5} {detalhe}")
+        tempo_str = f"{tempo_ms:.3f} ms" if tempo_ms is not None else "—"
+        print(f"[{marker}] {tc['id']:<12} {status:<5} {tempo_str:>12}  {detalhe}")
 
     total = sum(tally.values())
     print("\n" + "-" * 60)
@@ -223,6 +244,16 @@ def main() -> int:
         f"Total: {total}  PASS: {tally['PASS']}  FAIL: {tally['FAIL']}  "
         f"SKIP: {tally['SKIP']}  ERROR: {tally['ERROR']}"
     )
+
+    if args.tabela_markdown:
+        print("\n| numero do teste | tempo (não fuzzy) | tempo (fuzzy) |")
+        print("|---|---|---|")
+        for tc, _status, _detalhe, tempo_ms in resultados:
+            fuzzy = tc.get("modo_avaliado") == "fuzzy"
+            tempo_str = f"{tempo_ms:.3f} ms" if tempo_ms is not None else "—"
+            nao_fuzzy_col = "—" if fuzzy else tempo_str
+            fuzzy_col = "—"  # fuzzy matching ainda não implementado (Fase 2)
+            print(f"| {tc['id']} | {nao_fuzzy_col} | {fuzzy_col} |")
 
     return 1 if (tally["FAIL"] or tally["ERROR"]) else 0
 
