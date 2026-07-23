@@ -9,12 +9,22 @@ descritos no caso (lista de termos + valor de entrada) e executa a cláusula
 SPARQL gerada pelo método real de SparqlClauseBuilder (nenhuma lógica de
 matching é reimplementada aqui — o teste roda o código de produção).
 
-Casos FUZZY passam fuzzy=True aos adaptadores que suportam matching fuzzy
-(caminhos de inclusão); os demais adaptadores (caminhos de exclusão e o
-Ramo B do X70) ignoram o flag de propósito, pois esses caminhos não
-recebem fuzzy nesta fase (ver FUZZY_IMPLEMENTATION_PLAN.md). Casos
-categóricos (URIs de opção da ontologia) são SKIP — não usam string
-literal e estão fora do escopo do patch de case-insensitive/fuzzy.
+Todo caso com adaptador é executado nos DOIS algoritmos — fuzzy=False e
+fuzzy=True — independente da sua categoria original (LEGACY/CASE/FUZZY),
+cada execução cronometrada separadamente. O status PASS/FAIL/SKIP/ERROR
+continua avaliado contra o algoritmo que a própria categoria do caso indica
+(modo_avaliado): LEGACY/CASE contra fuzzy=False, FUZZY contra fuzzy=True.
+A execução no outro algoritmo é sempre feita e cronometrada, mas é
+informativa — não altera o veredito PASS/FAIL do caso.
+
+Adaptadores de caminhos de exclusão (filter_not_list, filtro_not_exists_agente,
+_disjuncoes_padroes_irmas) e do Ramo B do X70 ignoram o parâmetro fuzzy de
+propósito, pois esses caminhos não recebem fuzzy nesta fase (ver
+FUZZY_IMPLEMENTATION_PLAN.md) — para eles, as duas execuções produzem a
+mesma query e o mesmo tempo (dentro do ruído de medição), o que é o
+resultado esperado, não um erro. Casos categóricos (URIs de opção da
+ontologia) são SKIP e não têm adaptador — não são executados em nenhum dos
+dois algoritmos.
 
 Uso:
     python3 run_tests.py [--categoria LEGACY|CASE|FUZZY]
@@ -171,27 +181,22 @@ def _base_func_name(funcao_alvo: str) -> str:
     return funcao_alvo.split(" (")[0].split(" / ")[0].strip()
 
 
-def run_case(tc: dict) -> tuple[str, str, float | None]:
-    """Executa um caso e devolve (status, detalhe, tempo_query_ms).
+class _ExecResult:
+    """Resultado de uma única execução (um algoritmo) de um caso."""
 
-    status: PASS|FAIL|SKIP|ERROR. tempo_query_ms é None quando nenhuma query
-    chegou a ser executada (SKIP, ou erro antes de store.query()). Apenas a
-    chamada store.query(query) é cronometrada — a montagem do Store, das
-    listas de termos e da string da query ficam de fora da medição.
+    def __init__(self, membership: bool | None, tempo_ms: float | None, erro: str | None):
+        self.membership = membership
+        self.tempo_ms = tempo_ms
+        self.erro = erro
+
+
+def _execute(tc: dict, adapter, fuzzy: bool) -> _ExecResult:
     """
-    if tc.get("tipo_filtro") == "categorico":
-        return "SKIP", "campo categórico (URI de opção) — fora do escopo do patch de case-insensitive", None
-
-    expected = tc.get("resultado_esperado")
-    if not isinstance(expected, bool):
-        return "SKIP", f"resultado_esperado não é booleano ({expected!r}) — requer revisão manual", None
-
-    base_func = _base_func_name(tc["funcao_alvo"])
-    adapter = ADAPTERS.get(base_func)
-    if adapter is None:
-        return "SKIP", f"sem adaptador de teste para {tc['funcao_alvo']!r}", None
-
-    fuzzy = tc.get("modo_avaliado") == "fuzzy"
+    Monta o Store, gera a query real via `adapter` com o algoritmo indicado
+    (fuzzy=True/False) e a executa. Apenas a chamada store.query(query) é
+    cronometrada — a montagem do Store, das listas de termos e da string da
+    query ficam de fora da medição.
+    """
     term_lists: dict = {}
     icd_map: dict = {}
     store = ox.Store()
@@ -201,25 +206,67 @@ def run_case(tc: dict) -> tuple[str, str, float | None]:
         query = f"{PREFIX}\nASK {{\n  VALUES ?registro {{ <{REGISTRO.value}> }}\n" \
                 + "\n".join(where_lines) + "\n}"
     except Exception as exc:  # noqa: BLE001 — erro do gerador, antes de qualquer query
-        return "ERROR", f"{type(exc).__name__}: {exc}", None
+        return _ExecResult(None, None, f"{type(exc).__name__}: {exc}")
 
     t0 = time.perf_counter()
     try:
         ask_result = bool(store.query(query))
     except Exception as exc:  # noqa: BLE001 — erro do próprio pyoxigraph ao executar
         elapsed_ms = (time.perf_counter() - t0) * 1000
-        return "ERROR", f"{type(exc).__name__}: {exc}", elapsed_ms
+        return _ExecResult(None, elapsed_ms, f"{type(exc).__name__}: {exc}")
     elapsed_ms = (time.perf_counter() - t0) * 1000
 
     # Para filtros de exclusão, resultado_esperado=True significa "o termo
     # pertence à lista, logo o registro seria excluído" — o que corresponde a
     # ASK=False (a FILTER NOT EXISTS falha quando a lista casa o termo).
     invert = tc.get("tipo_filtro") == "exclusao"
-    actual_membership = (not ask_result) if invert else ask_result
+    membership = (not ask_result) if invert else ask_result
+    return _ExecResult(membership, elapsed_ms, None)
 
-    if actual_membership == expected:
-        return "PASS", f"esperado={expected} obtido={actual_membership}", elapsed_ms
-    return "FAIL", f"esperado={expected} obtido={actual_membership}", elapsed_ms
+
+def run_case(tc: dict) -> tuple[str, str, float | None, float | None]:
+    """Executa um caso nos DOIS algoritmos e devolve
+    (status, detalhe, tempo_nao_fuzzy_ms, tempo_fuzzy_ms).
+
+    status: PASS|FAIL|SKIP|ERROR, avaliado contra o algoritmo indicado por
+    `modo_avaliado` do próprio caso. A execução no outro algoritmo também
+    acontece sempre que há adaptador (ver docstring do módulo) e seu tempo é
+    devolvido, mas não influencia o veredito.
+    """
+    if tc.get("tipo_filtro") == "categorico":
+        return "SKIP", "campo categórico (URI de opção) — fora do escopo do patch de case-insensitive", None, None
+
+    base_func = _base_func_name(tc["funcao_alvo"])
+    adapter = ADAPTERS.get(base_func)
+    if adapter is None:
+        return "SKIP", f"sem adaptador de teste para {tc['funcao_alvo']!r}", None, None
+
+    nao_fuzzy = _execute(tc, adapter, fuzzy=False)
+    fuzzy = _execute(tc, adapter, fuzzy=True)
+
+    if nao_fuzzy.erro or fuzzy.erro:
+        detalhe = f"não-fuzzy: {nao_fuzzy.erro or 'ok'} | fuzzy: {fuzzy.erro or 'ok'}"
+        return "ERROR", detalhe, nao_fuzzy.tempo_ms, fuzzy.tempo_ms
+
+    expected = tc.get("resultado_esperado")
+    if not isinstance(expected, bool):
+        detalhe = (
+            f"resultado_esperado não é booleano ({expected!r}) — requer revisão manual "
+            f"(não-fuzzy: obtido={nao_fuzzy.membership} | fuzzy: obtido={fuzzy.membership})"
+        )
+        return "SKIP", detalhe, nao_fuzzy.tempo_ms, fuzzy.tempo_ms
+
+    usa_fuzzy = tc.get("modo_avaliado") == "fuzzy"
+    principal = fuzzy if usa_fuzzy else nao_fuzzy
+    outro_nome = "não-fuzzy" if usa_fuzzy else "fuzzy"
+    outro = nao_fuzzy if usa_fuzzy else fuzzy
+
+    detalhe = (
+        f"esperado={expected} obtido={principal.membership} "
+        f"[{outro_nome}: obtido={outro.membership}]"
+    )
+    status = "PASS" if principal.membership == expected else "FAIL"
+    return status, detalhe, nao_fuzzy.tempo_ms, fuzzy.tempo_ms
 
 
 def main() -> int:
@@ -242,12 +289,13 @@ def main() -> int:
     tally = {"PASS": 0, "FAIL": 0, "SKIP": 0, "ERROR": 0}
     resultados = []
     for tc in casos:
-        status, detalhe, tempo_ms = run_case(tc)
+        status, detalhe, tempo_nao_fuzzy, tempo_fuzzy = run_case(tc)
         tally[status] += 1
-        resultados.append((tc, status, detalhe, tempo_ms))
+        resultados.append((tc, status, detalhe, tempo_nao_fuzzy, tempo_fuzzy))
         marker = {"PASS": "✓", "FAIL": "✗", "SKIP": "·", "ERROR": "!"}[status]
-        tempo_str = f"{tempo_ms:.3f} ms" if tempo_ms is not None else "—"
-        print(f"[{marker}] {tc['id']:<12} {status:<5} {tempo_str:>12}  {detalhe}")
+        t_nf = f"{tempo_nao_fuzzy:.3f}" if tempo_nao_fuzzy is not None else "—"
+        t_f = f"{tempo_fuzzy:.3f}" if tempo_fuzzy is not None else "—"
+        print(f"[{marker}] {tc['id']:<12} {status:<5} não-fuzzy={t_nf:>8} ms  fuzzy={t_f:>8} ms  {detalhe}")
 
     total = sum(tally.values())
     print("\n" + "-" * 60)
@@ -259,11 +307,9 @@ def main() -> int:
     if args.tabela_markdown:
         print("\n| numero do teste | tempo (não fuzzy) | tempo (fuzzy) |")
         print("|---|---|---|")
-        for tc, _status, _detalhe, tempo_ms in resultados:
-            fuzzy = tc.get("modo_avaliado") == "fuzzy"
-            tempo_str = f"{tempo_ms:.3f} ms" if tempo_ms is not None else "—"
-            nao_fuzzy_col = "—" if fuzzy else tempo_str
-            fuzzy_col = tempo_str if fuzzy else "—"
+        for tc, _status, _detalhe, tempo_nao_fuzzy, tempo_fuzzy in resultados:
+            nao_fuzzy_col = f"{tempo_nao_fuzzy:.3f} ms" if tempo_nao_fuzzy is not None else "—"
+            fuzzy_col = f"{tempo_fuzzy:.3f} ms" if tempo_fuzzy is not None else "—"
             print(f"| {tc['id']} | {nao_fuzzy_col} | {fuzzy_col} |")
 
     return 1 if (tally["FAIL"] or tally["ERROR"]) else 0

@@ -446,11 +446,11 @@
       "tipo_filtro": "inclusao",
       "campo_regra": "AGENTE_1",
       "lista_termos": ["ácido acetilsalicílico (aas)"],
-      "valor_entrada": "ácido acetilsaliciico (aas)",
+      "valor_entrada": "ácido acetilsaicílico (aas)",
       "modo_avaliado": "fuzzy",
       "tipo_erro": "delecao",
       "resultado_esperado": true,
-      "observacao": "Mesmo termo com parênteses, agora com 1 deleção ('l' de 'saliciico') fora da parte entre parênteses — garante que o escaping não quebra a alternância de deleção quando o termo tem metacaracteres."
+      "observacao": "Mesmo termo com parênteses, agora com 1 deleção (o 'l' antes de 'cílico', mantendo o acento) fora da parte entre parênteses — garante que o escaping não quebra a alternância de deleção quando o termo tem metacaracteres. Corrigido em relação à versão anterior, cujo valor_entrada continha 2 edições reais (troca 'íl'→'i' + deleção), não 1 — ver FUZZY_IMPLEMENTATION_REPORT.md seção 4.1."
     },
     {
       "id": "FUZZY-13",
