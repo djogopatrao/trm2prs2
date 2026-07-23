@@ -9,10 +9,12 @@ descritos no caso (lista de termos + valor de entrada) e executa a cláusula
 SPARQL gerada pelo método real de SparqlClauseBuilder (nenhuma lógica de
 matching é reimplementada aqui — o teste roda o código de produção).
 
-Casos FUZZY são reportados como SKIP: a Fase 2 (matching fuzzy) do
-MODIFICATION_PLAN.md ainda não foi implementada. Casos categóricos (URIs de
-opção da ontologia) também são SKIP — não usam string literal e estão fora
-do escopo do patch de case-insensitive.
+Casos FUZZY passam fuzzy=True aos adaptadores que suportam matching fuzzy
+(caminhos de inclusão); os demais adaptadores (caminhos de exclusão e o
+Ramo B do X70) ignoram o flag de propósito, pois esses caminhos não
+recebem fuzzy nesta fase (ver FUZZY_IMPLEMENTATION_PLAN.md). Casos
+categóricos (URIs de opção da ontologia) são SKIP — não usam string
+literal e estão fora do escopo do patch de case-insensitive/fuzzy.
 
 Uso:
     python3 run_tests.py [--categoria LEGACY|CASE|FUZZY]
@@ -61,23 +63,27 @@ def _make_list(term_lists: dict, index: str, termos: list[str]) -> str:
 # e devolve as linhas de cláusula SPARQL que ele gera.
 # ---------------------------------------------------------------------------
 
-def _adapt_filter_exists_list_in_value(tc, store, term_lists, icd_map):
+def _adapt_filter_exists_list_in_value(tc, store, term_lists, icd_map, fuzzy):
     builder = SparqlClauseBuilder(SparqlVarCounter(), term_lists, icd_map)
     prop_vars = tc["campo_regra"].split(";")
     uri = _make_list(term_lists, "900", tc["lista_termos"])
     _seed(store, prop_vars[0], tc["valor_entrada"])
-    return builder.filter_exists_list_in_value(prop_vars, [uri])
+    return builder.filter_exists_list_in_value(prop_vars, [uri], fuzzy=fuzzy)
 
 
-def _adapt_filter_list_agente_origem(tc, store, term_lists, icd_map):
+def _adapt_filter_list_agente_origem(tc, store, term_lists, icd_map, fuzzy):
     builder = SparqlClauseBuilder(SparqlVarCounter(), term_lists, icd_map)
     prop_vars = tc["campo_regra"].split(";")
     uri = _make_list(term_lists, "901", tc["lista_termos"])
     _seed(store, prop_vars[0], tc["valor_entrada"])
-    return builder.filter_list_agente_origem(prop_vars, [uri])
+    return builder.filter_list_agente_origem(prop_vars, [uri], fuzzy=fuzzy)
 
 
-def _adapt_filter_not_list(tc, store, term_lists, icd_map):
+def _adapt_filter_not_list(tc, store, term_lists, icd_map, fuzzy):
+    # filter_not_list não tem parâmetro fuzzy (fora de escopo — filtro de
+    # exclusão). `fuzzy` é ignorado de propósito: mesmo quando um caso FUZZY
+    # exercita este caminho (ex.: FUZZY-13), o teste deve continuar rodando
+    # em modo exato, validando a fronteira de escopo da Fase 2.
     builder = SparqlClauseBuilder(SparqlVarCounter(), term_lists, icd_map)
     prop_vars = tc["campo_regra"].split(";")
     uri = _make_list(term_lists, "902", tc["lista_termos"])
@@ -85,16 +91,18 @@ def _adapt_filter_not_list(tc, store, term_lists, icd_map):
     return builder.filter_not_list(prop_vars, [uri])
 
 
-def _adapt_filter_list_inline(tc, store, term_lists, icd_map):
+def _adapt_filter_list_inline(tc, store, term_lists, icd_map, fuzzy):
     # A produção sempre chama filter_list_inline(["LOC_EXP_DE"], ...), mesmo
     # quando campo_regra do teste é o par combinado "LOC_EXPO;LOC_EXP_DE".
     builder = SparqlClauseBuilder(SparqlVarCounter(), term_lists, icd_map)
     uri = _make_list(term_lists, "903", tc["lista_termos"])
     _seed(store, "LOC_EXP_DE", tc["valor_entrada"])
-    return builder.filter_list_inline(["LOC_EXP_DE"], [uri])
+    return builder.filter_list_inline(["LOC_EXP_DE"], [uri], fuzzy=fuzzy)
 
 
-def _adapt_x70_ramo_b(tc, store, term_lists, icd_map):
+def _adapt_x70_ramo_b(tc, store, term_lists, icd_map, fuzzy):
+    # regra_complexa_agente_x70 não tem parâmetro fuzzy (fora de escopo nesta
+    # fase) — `fuzzy` é ignorado de propósito.
     builder = SparqlClauseBuilder(SparqlVarCounter(), term_lists, icd_map)
     campos = tc["campo_regra"].split(";")
     term_lists["intox:lista_23"] = {"rdf:label": "LISTA 23", "termos": list(tc["lista_termos"])}
@@ -107,7 +115,9 @@ def _adapt_x70_ramo_b(tc, store, term_lists, icd_map):
     )
 
 
-def _adapt_x89_fallback(tc, store, term_lists, icd_map):
+def _adapt_x89_fallback(tc, store, term_lists, icd_map, fuzzy):
+    # filtro_not_exists_agente não tem parâmetro fuzzy (fora de escopo —
+    # filtro de exclusão) — `fuzzy` é ignorado de propósito.
     builder = SparqlClauseBuilder(SparqlVarCounter(), term_lists, icd_map)
     campos = tc["campo_regra"].split(";")
     term_lists["intox:lista_21"] = {"rdf:label": "LISTA 21", "termos": list(tc["lista_termos"])}
@@ -123,7 +133,9 @@ def _adapt_x89_fallback(tc, store, term_lists, icd_map):
     )
 
 
-def _adapt_disjuncoes_padroes_irmas(tc, store, term_lists, icd_map):
+def _adapt_disjuncoes_padroes_irmas(tc, store, term_lists, icd_map, fuzzy):
+    # _disjuncoes_padroes_irmas não tem parâmetro fuzzy (fora de escopo —
+    # filtro de exclusão) — `fuzzy` é ignorado de propósito.
     builder = SparqlClauseBuilder(SparqlVarCounter(), term_lists, icd_map)
     campos = tc["campo_regra"].split(";")
     term_lists["intox:lista_905"] = {"rdf:label": "LISTA 905", "termos": list(tc["lista_termos"])}
@@ -135,12 +147,12 @@ def _adapt_disjuncoes_padroes_irmas(tc, store, term_lists, icd_map):
     )
 
 
-def _adapt_volume_iii(tc, store, term_lists, icd_map):
+def _adapt_volume_iii(tc, store, term_lists, icd_map, fuzzy):
     icd_map["Y45.0"] = list(tc["lista_termos"])
     builder = SparqlClauseBuilder(SparqlVarCounter(), term_lists, icd_map)
     campos = tc["campo_regra"].split(";")
     _seed(store, campos[0], tc["valor_entrada"])
-    return builder.regra_volume_iii_cid(";".join(campos), "Y450")
+    return builder.regra_volume_iii_cid(";".join(campos), "Y450", fuzzy=fuzzy)
 
 
 ADAPTERS = {
@@ -167,8 +179,6 @@ def run_case(tc: dict) -> tuple[str, str, float | None]:
     chamada store.query(query) é cronometrada — a montagem do Store, das
     listas de termos e da string da query ficam de fora da medição.
     """
-    if tc.get("modo_avaliado") == "fuzzy":
-        return "SKIP", "fuzzy ainda não implementado (Fase 2 do MODIFICATION_PLAN.md)", None
     if tc.get("tipo_filtro") == "categorico":
         return "SKIP", "campo categórico (URI de opção) — fora do escopo do patch de case-insensitive", None
 
@@ -181,12 +191,13 @@ def run_case(tc: dict) -> tuple[str, str, float | None]:
     if adapter is None:
         return "SKIP", f"sem adaptador de teste para {tc['funcao_alvo']!r}", None
 
+    fuzzy = tc.get("modo_avaliado") == "fuzzy"
     term_lists: dict = {}
     icd_map: dict = {}
     store = ox.Store()
 
     try:
-        where_lines = adapter(tc, store, term_lists, icd_map)
+        where_lines = adapter(tc, store, term_lists, icd_map, fuzzy)
         query = f"{PREFIX}\nASK {{\n  VALUES ?registro {{ <{REGISTRO.value}> }}\n" \
                 + "\n".join(where_lines) + "\n}"
     except Exception as exc:  # noqa: BLE001 — erro do gerador, antes de qualquer query
@@ -252,7 +263,7 @@ def main() -> int:
             fuzzy = tc.get("modo_avaliado") == "fuzzy"
             tempo_str = f"{tempo_ms:.3f} ms" if tempo_ms is not None else "—"
             nao_fuzzy_col = "—" if fuzzy else tempo_str
-            fuzzy_col = "—"  # fuzzy matching ainda não implementado (Fase 2)
+            fuzzy_col = tempo_str if fuzzy else "—"
             print(f"| {tc['id']} | {nao_fuzzy_col} | {fuzzy_col} |")
 
     return 1 if (tally["FAIL"] or tally["ERROR"]) else 0

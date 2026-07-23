@@ -91,6 +91,17 @@ class Config:
     # Primeira linha de termos das listas
     lists_terms_first_row: int = 46
 
+    # --- Matching fuzzy (Fase 2, opt-in) ---
+    # Chaves de campo (como aparecem no dicionário da regra, ex.
+    # "AGENTE_1;AGENTE_2;AGENTE_3;P_ATIVO_1;P_ATIVO_2;P_ATIVO_3") elegíveis
+    # para tolerância a 1 erro de digitação. Vazio = fuzzy desligado.
+    fuzzy_fields: frozenset[str] = frozenset()
+
+    # Termos mais curtos que este limite nunca recebem variantes fuzzy
+    # (apenas a forma exata), mesmo em campos habilitados — reduz o risco de
+    # falso positivo em palavras curtas.
+    fuzzy_min_term_length: int = 5
+
 
 # ===========================================================================
 # CARREGAMENTO DA ONTOLOGIA
@@ -359,6 +370,64 @@ def _remove_source_tag(term: str) -> str:
     return re.sub(r"#.*", "", term)
 
 
+# ---------------------------------------------------------------------------
+# Matching fuzzy (Fase 2): geração de padrão REGEX com tolerância a 1 erro
+# (substituição, deleção, duplicação de caractere). Ver FUZZY_IMPLEMENTATION_PLAN.md.
+# ---------------------------------------------------------------------------
+
+_REGEX_METACHARS = set(".^$*+?()[]{}|\\")
+
+
+def _escape_regex_char(c: str) -> str:
+    """Escapa 1 caractere se for metacaractere de regex XPath; senão devolve-o."""
+    return "\\" + c if c in _REGEX_METACHARS else c
+
+
+def _fuzzy_variants(term: str, min_length: int) -> list[str]:
+    """
+    Gera as variantes de regex (já escapadas por caractere) para 1 termo:
+    exata + substituição (wildcard '.') + deleção + duplicação, 1 posição
+    por vez. Termos mais curtos que min_length só geram a variante exata.
+    """
+    chars = [_escape_regex_char(c) for c in term]
+    n = len(chars)
+    variants = ["".join(chars)]
+
+    if n < min_length:
+        return variants
+
+    for i in range(n):
+        variants.append("".join(chars[:i]) + "." + "".join(chars[i + 1:]))
+    for i in range(n):
+        variants.append("".join(chars[:i] + chars[i + 1:]))
+    for i in range(n):
+        variants.append("".join(chars[:i + 1] + [chars[i]] + chars[i + 1:]))
+
+    return variants
+
+
+def _escape_sparql_string(s: str) -> str:
+    """Escapa uma string para ser embutida como literal de string SPARQL."""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _build_terms_pattern(terms: list[str], fuzzy: bool, min_length: int) -> str:
+    """
+    Monta o padrão REGEX ancorado ('^(alt1|alt2|…)$') para uma lista de
+    termos já em minúsculas, pronto para ser embutido em um literal de
+    string SPARQL (já escapado pelo passo 5 do algoritmo — ver
+    FUZZY_IMPLEMENTATION_PLAN.md seção 3).
+    """
+    all_variants: list[str] = []
+    for term in terms:
+        if fuzzy:
+            all_variants.extend(_fuzzy_variants(term, min_length))
+        else:
+            all_variants.append("".join(_escape_regex_char(c) for c in term))
+    pattern = "^(" + "|".join(all_variants) + ")$"
+    return _escape_sparql_string(pattern)
+
+
 def _extract_list_index(list_name: str) -> str:
     """Extrai o número de um nome de lista (ex. 'LISTA 3' → '3')."""
     return re.compile(r"[0-9]+").findall(list_name)[0]
@@ -599,10 +668,12 @@ class SparqlClauseBuilder:
         counter: SparqlVarCounter,
         term_lists: dict[str, dict],
         icd_to_substances: dict[str, list[str]] | None = None,
+        fuzzy_min_term_length: int = 5,
     ):
         self._c = counter
         self._term_lists = term_lists
         self._icd_to_substances = icd_to_substances or {}
+        self._fuzzy_min_term_length = fuzzy_min_term_length
         # cache de listas já declaradas com VALUES (reutilização dentro da query)
         self._declared_values: dict[str, str] = {}
         # Bindings de ORIGEM do agente expostos no corpo do WHERE (fora de
@@ -730,13 +801,15 @@ class SparqlClauseBuilder:
         self,
         prop_vars: list[str],
         list_uris: list[str],
+        fuzzy: bool = False,
     ) -> list[str]:
         """
         Gera:
             FILTER EXISTS {
                 ?registro ?_propr_N ?_value_M.
                 FILTER ( ?_propr_N IN ( intox:P1, … ) ).
-                FILTER ( ?_value_M IN ( "t1", "t2", … ) ).
+                FILTER ( ?_value_M IN ( "t1", "t2", … ) ).           # fuzzy=False
+                FILTER ( REGEX(LCASE(STR(?_value_M)), "^(...)$") ).  # fuzzy=True
             }
         """
         list_var_name, terms = self._resolve_terms(list_uris)
@@ -746,11 +819,17 @@ class SparqlClauseBuilder:
         v_prop = f"_propr_{self._c.next()}"
         v_val = f"_value_{self._c.next()}"
 
+        if fuzzy:
+            pattern = _build_terms_pattern(terms, fuzzy=True, min_length=self._fuzzy_min_term_length)
+            value_filter = f'\t\tFILTER ( REGEX(LCASE(STR(?{v_val})), "{pattern}", "i") ).'
+        else:
+            value_filter = f"\t\tFILTER ( LCASE(STR(?{v_val})) IN ( {values_str})  )."
+
         return [
             "\tFILTER EXISTS {",
             f"\t\t?registro ?{v_prop} ?{v_val}.",
             f"\t\tFILTER ( ?{v_prop} IN ( {props_str})  ).",
-            f"\t\tFILTER ( LCASE(STR(?{v_val})) IN ( {values_str})  ).",
+            value_filter,
             "\t}",
         ]
 
@@ -758,6 +837,7 @@ class SparqlClauseBuilder:
         self,
         prop_vars: list[str],
         list_uris: list[str],
+        fuzzy: bool = False,
     ) -> list[str]:
         """
         Igual a `filter_exists_list_in_value`, porém traz o casamento agente→lista
@@ -781,10 +861,16 @@ class SparqlClauseBuilder:
 
         self.origem_bindings.append((v_prop, v_val))
 
+        if fuzzy:
+            pattern = _build_terms_pattern(terms, fuzzy=True, min_length=self._fuzzy_min_term_length)
+            value_filter = f'\tFILTER ( REGEX(LCASE(STR(?{v_val})), "{pattern}", "i") ).'
+        else:
+            value_filter = f"\tFILTER ( LCASE(STR(?{v_val})) IN ( {values_str})  )."
+
         return [
             f"\t?registro ?{v_prop} ?{v_val}.",
             f"\tFILTER ( ?{v_prop} IN ( {props_str})  ).",
-            f"\tFILTER ( LCASE(STR(?{v_val})) IN ( {values_str})  ).",
+            value_filter,
         ]
 
     # ------------------------------------------------------------------
@@ -833,6 +919,7 @@ class SparqlClauseBuilder:
         self,
         prop_vars: list[str],
         list_uris: list[str],
+        fuzzy: bool = False,
     ) -> list[str]:
         """
         Gera cláusula FILTER( ?v IN (...) ) inline, sem FILTER EXISTS.
@@ -857,7 +944,11 @@ class SparqlClauseBuilder:
         else:
             clauses.append(f"?registro intox:{prop_vars[0]} ?{v_val}.")
 
-        filters.append(f"LCASE(STR(?{v_val})) IN {in_str}")
+        if fuzzy:
+            pattern = _build_terms_pattern(terms, fuzzy=True, min_length=self._fuzzy_min_term_length)
+            filters.append(f'REGEX(LCASE(STR(?{v_val})), "{pattern}", "i")')
+        else:
+            filters.append(f"LCASE(STR(?{v_val})) IN {in_str}")
 
         clauses.append("FILTER( ")
         add_and = False
@@ -877,14 +968,17 @@ class SparqlClauseBuilder:
         list_uris: list[str],
         not_exists: bool = False,
         filter_exists: bool = True,
+        fuzzy: bool = False,
     ) -> list[str]:
         if not_exists:
             if filter_exists:
                 raise ValueError("not_exists=True é deprecado. Use filter_not_list diretamente.")
+            if fuzzy:
+                raise ValueError("fuzzy não é suportado em filtros de exclusão nesta fase.")
             return self.filter_not_list(prop_vars, list_uris)
         if filter_exists:
-            return self.filter_exists_list_in_value(prop_vars, list_uris)
-        return self.filter_list_inline(prop_vars, list_uris)
+            return self.filter_exists_list_in_value(prop_vars, list_uris, fuzzy=fuzzy)
+        return self.filter_list_inline(prop_vars, list_uris, fuzzy=fuzzy)
 
     # ------------------------------------------------------------------
     # Regra especial: agente com lógica para X70
@@ -1296,6 +1390,7 @@ class SparqlClauseBuilder:
         self,
         var_name: str,
         inferred_cid: str,
+        fuzzy: bool = False,
     ) -> list[str]:
         """Filtra pelos termos do Volume III do CID-10 para o CID inferido."""
         icd = inferred_cid[0:3] + "." + inferred_cid[3]
@@ -1313,7 +1408,9 @@ class SparqlClauseBuilder:
         self._declared_values.clear()
 
         try:
-            clause = self.filter_exists_list_in_value(var_name.split(";"), ["intox:lista_99"])
+            clause = self.filter_exists_list_in_value(
+                var_name.split(";"), ["intox:lista_99"], fuzzy=fuzzy
+            )
         finally:
             # Garante remoção mesmo em caso de exceção
             self._term_lists.pop("intox:lista_99", None)
@@ -1329,6 +1426,7 @@ class SparqlClauseBuilder:
         self,
         values: list[str],
         ontology: "OntologyLoader",
+        fuzzy: bool = False,
     ) -> list[str]:
         """
         Gera a cláusula SPARQL para o campo LOC_EXPO;LOC_EXP_DE.
@@ -1380,7 +1478,7 @@ class SparqlClauseBuilder:
                 q += ["\tFILTER NOT EXISTS {"]
 
             uri_listas = [_list_uri_from_name(v) for v in values_listas]
-            inner = self.filter_list_inline(["LOC_EXP_DE"], uri_listas)
+            inner = self.filter_list_inline(["LOC_EXP_DE"], uri_listas, fuzzy=fuzzy)
             q += inner
 
             if negation_list:
@@ -1451,7 +1549,10 @@ class RuleProcessor:
         Retorna uma lista de linhas (strings) da query.
         """
         counter = SparqlVarCounter()
-        builder = SparqlClauseBuilder(counter, self._term_lists, self._icd_to_substances)
+        builder = SparqlClauseBuilder(
+            counter, self._term_lists, self._icd_to_substances,
+            fuzzy_min_term_length=self._config.fuzzy_min_term_length,
+        )
         inferred_prop = self._config.inferred_cid_prop
 
         inferred_value = rule[inferred_prop][0]
@@ -1608,7 +1709,8 @@ class RuleProcessor:
 
         # Regra especial: LOC_EXPO + LOC_EXP_DE combinados
         if var_name == "LOC_EXPO;LOC_EXP_DE":
-            return builder.regra_local_exposicao(values, self._ontology)
+            fuzzy = var_name in self._config.fuzzy_fields
+            return builder.regra_local_exposicao(values, self._ontology, fuzzy=fuzzy)
 
         # Regra especial: agente com exclusão de lista
         if var_name.startswith("AGENTE") and values[0] == "null":
@@ -1621,18 +1723,20 @@ class RuleProcessor:
 
         # Termos do Volume III do CID-10
         if values[0] == "Termos do volume III do CID-10 vinculados a esse código":
-            return builder.regra_volume_iii_cid(var_name, full_rule[inferred_prop][0])
+            fuzzy = var_name in self._config.fuzzy_fields
+            return builder.regra_volume_iii_cid(var_name, full_rule[inferred_prop][0], fuzzy=fuzzy)
 
         # Campo com valores que referenciam listas de termos
         if "LISTA" in values[0]:
             uri_listas = [_list_uri_from_name(v) for v in values]
             campos = var_name.split(";")
+            fuzzy = var_name in self._config.fuzzy_fields
             # Caminho PADRÃO agente→lista: expor o campo/valor de origem (nó
             # intox:temInferencia). Demais campos com LISTA seguem o filtro
             # existencial usual (sem exposição de origem).
             if var_name.startswith("AGENTE"):
-                return builder.filter_list_agente_origem(campos, uri_listas) + [""]
-            return builder.filter_list(campos, uri_listas) + [""]
+                return builder.filter_list_agente_origem(campos, uri_listas, fuzzy=fuzzy) + [""]
+            return builder.filter_list(campos, uri_listas, fuzzy=fuzzy) + [""]
 
         # Campo com valores de opção categórica (ou regra CLASSI_FIN especial)
         return self._process_categorical_field(var_name, values, builder, inferred_prop, line_number)
