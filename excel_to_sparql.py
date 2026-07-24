@@ -740,9 +740,12 @@ class SparqlClauseBuilder:
         for i, c in enumerate(campos):
             a = f"?_a{i}_{sufixo}"
             lines.append(f"\tOPTIONAL {{ ?registro intox:{c} {a}. }}")
-            coalesce_val_args.append(a)
+            # BOUND() sozinho não distingue "tripla ausente" de "tripla
+            # presente com literal vazio" — exige também STRLEN(STR(...))>0
+            # para considerar o campo genuinamente preenchido.
+            coalesce_val_args.append(f"IF(BOUND({a}) && STRLEN(STR({a}))>0, {a}, 1/0)")
             # 1/0 dispara erro → COALESCE pula para o próximo campo bound.
-            coalesce_campo_args.append(f"IF(BOUND({a}), intox:{c}, 1/0)")
+            coalesce_campo_args.append(f"IF(BOUND({a}) && STRLEN(STR({a}))>0, intox:{c}, 1/0)")
         lines += [
             f"\tBIND( COALESCE({', '.join(coalesce_val_args)}) AS ?{v_val} )",
             f"\tBIND( COALESCE({', '.join(coalesce_campo_args)}) AS ?{v_campo} )",
@@ -1037,9 +1040,12 @@ class SparqlClauseBuilder:
         for i, c in enumerate(campos):
             a = f"?_a{i}_x70"
             opt_lines.append(f"\t\tOPTIONAL {{ ?registro intox:{c} {a}. }}")
-            coalesce_val_args.append(a)
+            # BOUND() sozinho não distingue "tripla ausente" de "tripla
+            # presente com literal vazio" — exige também STRLEN(STR(...))>0
+            # para considerar o campo genuinamente preenchido.
+            coalesce_val_args.append(f"IF(BOUND({a}) && STRLEN(STR({a}))>0, {a}, 1/0)")
             # 1/0 dispara erro → COALESCE pula para o próximo campo bound.
-            coalesce_campo_args.append(f"IF(BOUND({a}), intox:{c}, 1/0)")
+            coalesce_campo_args.append(f"IF(BOUND({a}) && STRLEN(STR({a}))>0, intox:{c}, 1/0)")
 
         ramo_a = [
             "\t{",
@@ -1118,8 +1124,11 @@ class SparqlClauseBuilder:
         for i, c in enumerate(campos):
             a = f"?_a{i}_x70"
             opt_lines.append(f"\t\tOPTIONAL {{ ?registro intox:{c} {a}. }}")
-            coalesce_val_args.append(a)
-            coalesce_campo_args.append(f"IF(BOUND({a}), intox:{c}, 1/0)")
+            # BOUND() sozinho não distingue "tripla ausente" de "tripla
+            # presente com literal vazio" — exige também STRLEN(STR(...))>0
+            # para considerar o campo genuinamente preenchido.
+            coalesce_val_args.append(f"IF(BOUND({a}) && STRLEN(STR({a}))>0, {a}, 1/0)")
+            coalesce_campo_args.append(f"IF(BOUND({a}) && STRLEN(STR({a}))>0, intox:{c}, 1/0)")
 
         return [
             "\t{",
