@@ -428,6 +428,26 @@ def _build_terms_pattern(terms: list[str], fuzzy: bool, min_length: int) -> str:
     return _escape_sparql_string(pattern)
 
 
+# ---------------------------------------------------------------------------
+# Normalização de espaços em branco (P2 de BUG_FIX_PLAN.md): SPARQL 1.1 não
+# tem TRIM() nativo — usamos REPLACE com regex para remover espaços no
+# início/fim antes de comparar. Os dois backslashes por \s são necessários
+# porque o texto abaixo é embutido literalmente dentro de um literal de
+# string SPARQL: o parser desfaz "\\" para "\" antes do mecanismo de REGEX
+# ver o padrão, então "\\\\s" no texto Python vira "\\s" na query, que o
+# SPARQL lê como um único "\s" (espaço em branco) depois de desescapar.
+# ---------------------------------------------------------------------------
+
+_TRIM_REGEX_SPARQL = r"^\\s+|\\s+$"
+
+
+def _trimmed_lcase(expr: str) -> str:
+    """Envolve uma expressão SPARQL com LCASE(REPLACE(..., trim, "")) —
+    normaliza caixa e remove espaços em branco no início/fim antes de comparar.
+    """
+    return f'LCASE(REPLACE({expr}, "{_TRIM_REGEX_SPARQL}", ""))'
+
+
 def _extract_list_index(list_name: str) -> str:
     """Extrai o número de um nome de lista (ex. 'LISTA 3' → '3')."""
     return re.compile(r"[0-9]+").findall(list_name)[0]
@@ -626,7 +646,7 @@ def _consolidate_lists(
     var_name = "lista_termos_consolidados_" + "_".join(u.split("_")[1] for u in list_uris)
     terms: list[str] = []
     for uri in list_uris:
-        terms += [t.lower() for t in term_lists[uri]["termos"]]
+        terms += [t.strip().lower() for t in term_lists[uri]["termos"]]
     return var_name, sorted(set(terms))
 
 
@@ -822,11 +842,12 @@ class SparqlClauseBuilder:
         v_prop = f"_propr_{self._c.next()}"
         v_val = f"_value_{self._c.next()}"
 
+        trimmed = _trimmed_lcase(f"STR(?{v_val})")
         if fuzzy:
             pattern = _build_terms_pattern(terms, fuzzy=True, min_length=self._fuzzy_min_term_length)
-            value_filter = f'\t\tFILTER ( REGEX(LCASE(STR(?{v_val})), "{pattern}", "i") ).'
+            value_filter = f'\t\tFILTER ( REGEX({trimmed}, "{pattern}", "i") ).'
         else:
-            value_filter = f"\t\tFILTER ( LCASE(STR(?{v_val})) IN ( {values_str})  )."
+            value_filter = f"\t\tFILTER ( {trimmed} IN ( {values_str})  )."
 
         return [
             "\tFILTER EXISTS {",
@@ -864,11 +885,12 @@ class SparqlClauseBuilder:
 
         self.origem_bindings.append((v_prop, v_val))
 
+        trimmed = _trimmed_lcase(f"STR(?{v_val})")
         if fuzzy:
             pattern = _build_terms_pattern(terms, fuzzy=True, min_length=self._fuzzy_min_term_length)
-            value_filter = f'\tFILTER ( REGEX(LCASE(STR(?{v_val})), "{pattern}", "i") ).'
+            value_filter = f'\tFILTER ( REGEX({trimmed}, "{pattern}", "i") ).'
         else:
-            value_filter = f"\tFILTER ( LCASE(STR(?{v_val})) IN ( {values_str})  )."
+            value_filter = f"\tFILTER ( {trimmed} IN ( {values_str})  )."
 
         return [
             f"\t?registro ?{v_prop} ?{v_val}.",
@@ -900,7 +922,7 @@ class SparqlClauseBuilder:
             list_var_name = _list_var_name(idx)
             # Normaliza para minúsculo para manter consistência com _consolidate_lists,
             # que sempre faz .lower() nos termos quando há múltiplas listas.
-            terms = [t.lower() for t in self._term_lists[list_uris[0]]["termos"]]
+            terms = [t.strip().lower() for t in self._term_lists[list_uris[0]]["termos"]]
 
         declaration = self.values_clause(list_var_name, terms)
         variable = f"_v{self._c.next()}"
@@ -910,7 +932,7 @@ class SparqlClauseBuilder:
             "FILTER NOT EXISTS {",
             f"\t?registro {property_path} ?{variable}.",
             "\t" + declaration,
-            f"\tFILTER( ?{variable} != \"\" && ?{list_var_name} = LCASE(STR( ?{variable} )) ) ",
+            f"\tFILTER( ?{variable} != \"\" && ?{list_var_name} = {_trimmed_lcase(f'STR( ?{variable} )')} ) ",
             "}",
         ]
 
@@ -947,11 +969,12 @@ class SparqlClauseBuilder:
         else:
             clauses.append(f"?registro intox:{prop_vars[0]} ?{v_val}.")
 
+        trimmed = _trimmed_lcase(f"STR(?{v_val})")
         if fuzzy:
             pattern = _build_terms_pattern(terms, fuzzy=True, min_length=self._fuzzy_min_term_length)
-            filters.append(f'REGEX(LCASE(STR(?{v_val})), "{pattern}", "i")')
+            filters.append(f'REGEX({trimmed}, "{pattern}", "i")')
         else:
-            filters.append(f"LCASE(STR(?{v_val})) IN {in_str}")
+            filters.append(f"{trimmed} IN {in_str}")
 
         clauses.append("FILTER( ")
         add_and = False
@@ -1072,7 +1095,7 @@ class SparqlClauseBuilder:
             "intox:categoria_AGENTE_TOX_09, intox:categoria_AGENTE_TOX_14 ) )",
             f"\t\t?registro ?{v_campo} ?{v_val}.",
             f"\t\tFILTER( ?{v_campo} IN ( {props_str} ) )",
-            f"\t\tFILTER( LCASE(STR(?{v_val})) IN ( {values_str} ) )",
+            f"\t\tFILTER( {_trimmed_lcase(f'STR(?{v_val})')} IN ( {values_str} ) )",
             f'\t\tBIND( IRI(CONCAT( STR(?registro), "_inf_{cid}_", '
             f"ENCODE_FOR_URI(STR(?{v_campo})), \"_\", "
             f"ENCODE_FOR_URI(STR(?{v_val})) )) AS ?{v_inf} )",
@@ -1184,13 +1207,14 @@ class SparqlClauseBuilder:
             _, terms2 = _consolidate_lists(
                 ["intox:lista_23", "intox:lista_24"], self._term_lists
             )
+            trimmed_var = _trimmed_lcase(f"STR(?{var_value})")
             disjuncoes = [
-                [f"LCASE(STR(?{var_value})) IN " + self.in_clause(terms1)],
+                [f"{trimmed_var} IN " + self.in_clause(terms1)],
                 ["?AGENTE_TOX_value IN ( intox:categoria_AGENTE_TOX_02, intox:categoria_AGENTE_TOX_03, intox:categoria_AGENTE_TOX_04, intox:categoria_AGENTE_TOX_05 )"],
                 [
                     "?AGENTE_TOX_value IN ( intox:categoria_AGENTE_TOX_07, intox:categoria_AGENTE_TOX_09, intox:categoria_AGENTE_TOX_14 )",
                     "&&",
-                    f"LCASE(STR(?{var_value})) IN " + self.in_clause(terms2),
+                    f"{trimmed_var} IN " + self.in_clause(terms2),
                 ],
             ]
 
@@ -1261,12 +1285,13 @@ class SparqlClauseBuilder:
         disjunção SPARQL para o FILTER NOT EXISTS do X89. Cada bloco é uma lista
         de linhas que serão unidas por '||' no chamador.
         """
+        trimmed_var = _trimmed_lcase(f"STR(?{var_value})")
         blocos: list[list[str]] = []
         for pad in padroes_irmas:
             if pad["tipo"] == "lista":
                 uris = [f"intox:lista_{n}" for n in pad["listas"]]
                 _, termos = _consolidate_lists(uris, self._term_lists)
-                blocos.append([f"LCASE(STR(?{var_value})) IN " + self.in_clause(termos)])
+                blocos.append([f"{trimmed_var} IN " + self.in_clause(termos)])
             elif pad["tipo"] == "agente_tox":
                 cats = ", ".join(
                     f"intox:categoria_AGENTE_TOX_{c}" for c in pad["categorias"]
@@ -1275,7 +1300,7 @@ class SparqlClauseBuilder:
                 if pad["listas"]:
                     uris = [f"intox:lista_{n}" for n in pad["listas"]]
                     _, termos = _consolidate_lists(uris, self._term_lists)
-                    bloco += ["&&", f"LCASE(STR(?{var_value})) IN " + self.in_clause(termos)]
+                    bloco += ["&&", f"{trimmed_var} IN " + self.in_clause(termos)]
                 blocos.append(bloco)
         return blocos
 
@@ -1515,7 +1540,7 @@ class SparqlClauseBuilder:
         if len(list_uris) > 1:
             return _consolidate_lists(list_uris, self._term_lists)
         idx = _extract_list_index(self._term_lists[list_uris[0]]["rdf:label"])
-        terms = [t.lower() for t in self._term_lists[list_uris[0]]["termos"]]
+        terms = [t.strip().lower() for t in self._term_lists[list_uris[0]]["termos"]]
         return _list_var_name(idx), terms
 
 

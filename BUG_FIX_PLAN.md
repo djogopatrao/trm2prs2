@@ -4,13 +4,14 @@
 > citadas refletem o estado de `excel_to_sparql.py` **antes** da correção
 > (pós Fase 1 case-insensitive + Fase 2 fuzzy, pré-correção deste bug).
 >
-> **Status: itens P0 (seções 2.1-2.3) implementados e testados.** Ver
-> `test_bugfix_origem.py` (16/16 casos passam, cobrindo os 4 consumidores:
-> `_origem_agente_lines` diretamente, caminho universal via
-> `regra_complexa_agente_x70` Ramo A, `regra_agente_tox_qualquer_conteudo` e
-> `filtro_not_exists_agente`/X89) e a suíte principal (`run_tests.py`,
-> continua em 32 PASS/0 FAIL/2 SKIP, sem regressão). Itens P1/P2/P3
-> permanecem pendentes.
+> **Status: itens P0 (seções 2.1-2.3) e P2 (seção 2.5, normalização de
+> espaços) implementados e testados.** Ver `test_bugfix_origem.py` (P0,
+> 16/16 casos, cobrindo os 4 consumidores: `_origem_agente_lines`
+> diretamente, caminho universal via `regra_complexa_agente_x70` Ramo A,
+> `regra_agente_tox_qualquer_conteudo` e `filtro_not_exists_agente`/X89) e
+> `test_p2_whitespace_trim.py` (P2, 22/22 casos). A suíte principal
+> (`run_tests.py`) continua em 32 PASS/0 FAIL/2 SKIP, sem regressão em
+> nenhuma das duas correções. Itens P1/P3 permanecem pendentes.
 
 ## 1. Recapitulação do problema
 
@@ -99,21 +100,41 @@ do sufixo parametrizável de `_origem_agente_lines` — a chamada precisaria
 passar `sufixo="x70"` explicitamente para preservar os nomes de variável
 que o restante dessas funções referencia.
 
-### 2.5 (Fora de escopo desta correção, avaliar separadamente) Achados secundários do relatório — **P2/P3**
+### 2.5a Normalização de espaços em branco — **P2** ✅ Implementado
 
-- **Normalização de espaços em branco** (seção 5.1 do relatório): não há
-  função `TRIM()` nativa em SPARQL 1.1 — a forma correta seria
-  `REPLACE(STR(?v), "^\\s+|\\s+$", "")` aplicado a cada comparação de termo.
-  Isso tocaria os **mesmos 8 pontos** já alterados nas Fases 1/2
-  (`filter_exists_list_in_value`, `filter_list_agente_origem`,
-  `filter_not_list`, `filter_list_inline`, etc.) — escopo comparável a uma
-  nova fase, não uma correção pontual. Recomendo tratar como iniciativa
-  separada, não como parte desta correção de bug.
-- **Valores compostos em uma única célula** (seção 5.2 do relatório, ex.
-  `"AMITRIL,POLARAMINE,RIVOTRIL"`): é uma limitação de modelagem de dados,
-  não corrigível apenas na camada SPARQL sem antes decidir, com o time de
-  domínio, como separar/tratar múltiplos valores dentro de uma célula.
-  **P3** — requer decisão de produto antes de qualquer mudança de código.
+Aplicado nos **mesmos 8 pontos** já alterados nas Fases 1/2:
+`filter_exists_list_in_value`, `filter_list_agente_origem`, `filter_not_list`,
+`filter_list_inline`, `regra_complexa_agente_x70` (Ramo B),
+`filtro_not_exists_agente` (fallback), `_disjuncoes_padroes_irmas` (2
+ocorrências) — 12 substituições de `LCASE(STR(...))` no total.
+
+- **Novo helper de módulo** `_trimmed_lcase(expr)`: envolve uma expressão
+  SPARQL com `LCASE(REPLACE(expr, "^\\s+|\\s+$", ""))`. SPARQL 1.1 não tem
+  `TRIM()` nativo — `REPLACE` com regex de âncora (`^\s+|\s+$`) é a forma
+  padrão de obter o mesmo efeito. O padrão embutido na query usa `\\s`
+  (barra dupla) porque o texto é escrito dentro de um literal de string
+  SPARQL: o parser desfaz `\\` → `\` antes do motor de regex ver o padrão.
+- **Lado Python**: `.strip()` acrescentado junto com o `.lower()` já
+  existente nos 3 pontos de preparação de termos (`_consolidate_lists`,
+  `_resolve_terms`, `filter_not_list`) — sem isso, um termo com espaço
+  sobrando na própria planilha continuaria divergindo do valor comparado
+  mesmo depois do valor ser normalizado em runtime.
+- **Único cuidado real**: o trim remove espaços **só nas pontas**
+  (`^\s+|\s+$`), não normaliza espaços duplicados no meio da string — isso
+  é intencional (não fazia parte do achado 5.1) e foi verificado
+  explicitamente em `test_p2_whitespace_trim.py` (controle negativo).
+- **Validado** em `test_p2_whitespace_trim.py` (22/22 casos, cobrindo os 4
+  pontos de inclusão/exclusão mais uma combinação trim+fuzzy) e confirmado
+  sem regressão em `run_tests.py` (32/0/2/0) e `test_bugfix_origem.py`
+  (16/16).
+
+### 2.5b Valores compostos em uma única célula — **P3**
+
+Achado da seção 5.2 do relatório (ex. `"AMITRIL,POLARAMINE,RIVOTRIL"`): é
+uma limitação de modelagem de dados, não corrigível apenas na camada SPARQL
+sem antes decidir, com o time de domínio, como separar/tratar múltiplos
+valores dentro de uma célula. Requer decisão de produto antes de qualquer
+mudança de código — permanece pendente.
 
 ## 3. Avaliação de risco de regressão
 
@@ -123,8 +144,8 @@ que o restante dessas funções referencia.
 | 2.2 `regra_complexa_agente_x70` Ramo A | **Baixo** | Mesma lógica de 2.1, mesmo argumento. Único cuidado: Ramo A é parte de uma `UNION` com o Ramo B — confirmar que a correção não introduz nenhuma variável cruzando a fronteira do UNION (o padrão atual já evita isso; a correção não adiciona novas variáveis, só refina a condição das existentes). |
 | 2.3 `regra_agente_tox_qualquer_conteudo` | **Baixo** | Mesma lógica de 2.1/2.2. |
 | 2.4 Eliminar duplicação (refatoração) | **Médio** | Mexe na estrutura de 2 funções (não só na condição), risco de alterar nomes de variável/quebrar referências do CONSTRUCT se o sufixo não for passado corretamente. Só fazer **depois** de 2.1-2.3 estarem corrigidos e testados isoladamente. |
-| 2.5 Normalização de espaços | **Médio-Alto** | Toca os mesmos 8 pontos das Fases 1/2 — mesmo perfil de risco já documentado em `MODIFICATION_PLAN.md` (mudança de comportamento em filtros de exclusão, possível impacto em performance). Tratar como iniciativa própria, com seu próprio plano. |
-| 2.5 Valores compostos | **Alto / bloqueado** | Não há mudança de código segura sem definição prévia de regra de negócio (separar por vírgula? Ignorar? Tratar como termo atômico?). Fazer antes disso seria adivinhação. |
+| 2.5a Normalização de espaços | **Médio-Alto avaliado, Baixo observado** | Tocou os mesmos 8 pontos das Fases 1/2 (mesmo perfil de risco documentado em `MODIFICATION_PLAN.md`), incluindo filtros de exclusão. Na prática, `run_tests.py` (32/0/2/0) e `test_bugfix_origem.py` (16/16) continuaram idênticos após a mudança — o trim só afeta valores com espaço nas pontas, que nenhum caso existente exercitava. Risco residual: performance (`REPLACE` roda em toda comparação, mesmo sem espaço a remover — custo adicional pequeno mas não nulo por chamada) e a mudança de comportamento em filtros de exclusão citada no `MODIFICATION_PLAN.md` original (mais registros podem passar a ser excluídos/incluídos se tinham espaço extra). |
+| 2.5b Valores compostos | **Alto / bloqueado** | Não há mudança de código segura sem definição prévia de regra de negócio (separar por vírgula? Ignorar? Tratar como termo atômico?). Fazer antes disso seria adivinhação. Não implementado. |
 
 ## 4. Priorização recomendada
 
@@ -137,29 +158,38 @@ que o restante dessas funções referencia.
 2. **P1 — Depois, opcional**: item 2.4 (eliminar a triplicação). Só depois
    de 2.1-2.3 estarem corrigidos e validados — não é pré-requisito, é
    redução de dívida técnica.
-3. **P2 — Iniciativa separada, planejar depois**: normalização de espaços
-   (2.5a). Merece seu próprio plano de modificação (nos moldes de
-   `MODIFICATION_PLAN.md`/`FUZZY_IMPLEMENTATION_PLAN.md`), não uma correção
-   pontual.
+3. **P2 — Normalização de espaços (2.5a). ✅ Feito** — ver
+   `test_p2_whitespace_trim.py` e a seção 5 abaixo.
 4. **P3 — Aguardando decisão de produto**: valores compostos numa única
    célula (2.5b). Não colocar no roadmap de código até haver uma decisão
-   de negócio sobre como tratar esses valores.
+   de negócio sobre como tratar esses valores. Continua pendente.
 
-## 5. Validação realizada após a correção (P0)
+## 5. Validação realizada após as correções (P0 e P2)
 
-- **✅ Feito**: `test_bugfix_origem.py` cobre os 4 cenários de
+- **✅ Feito (P0)**: `test_bugfix_origem.py` cobre os 4 cenários de
   `BUG_INVESTIGATION_REPORT.md` (campo ausente + posterior preenchido;
   1º campo bound-mas-vazio + posterior preenchido; nenhum campo presente;
   todos os campos bound-mas-vazios) contra os **4 consumidores** da lógica
   corrigida: `_origem_agente_lines` diretamente, `regra_complexa_agente_x70`
   (Ramo A), `regra_agente_tox_qualquer_conteudo` e
   `filtro_not_exists_agente` (rota X89, que também usa `_origem_agente_lines`
-  internamente). **16/16 casos passam.** Não reimplementa a lógica —
-  executa o SPARQL real gerado pelo código de produção contra um
-  `pyoxigraph.Store` sintético, igual ao padrão de `run_tests.py`.
-- **✅ Feito**: suíte principal (`python3 run_tests.py`) reexecutada após a
-  correção — permanece em **32 PASS, 0 FAIL, 2 SKIP**, idêntico ao resultado
-  pré-correção, confirmando ausência de regressão nos casos de
+  internamente). **16/16 casos passam.**
+- **✅ Feito (P2)**: `test_p2_whitespace_trim.py` cobre espaço à esquerda,
+  à direita, dos dois lados, ausência de espaço (controle positivo) e
+  espaço duplo NO MEIO (controle negativo — o trim não deve mexer em
+  espaços internos) contra os 4 pontos de inclusão/exclusão
+  (`filter_exists_list_in_value`, `filter_list_agente_origem`,
+  `filter_list_inline`, `filter_not_list`), mais uma combinação trim+fuzzy.
+  **22/22 casos passam.**
+- Ambas as suítes de correção **não reimplementam a lógica sendo testada**
+  — executam o SPARQL real gerado pelo código de produção contra um
+  `pyoxigraph.Store` sintético, igual ao padrão de `run_tests.py`. As duas
+  foram verificadas contra falso-positivo: revertendo a correção numa cópia
+  temporária do código, os testes relevantes passam a falhar exatamente
+  como esperado (13/22 no caso do P2), confirmando que não são tautologias.
+- **✅ Feito**: suíte principal (`python3 run_tests.py`) reexecutada após
+  cada correção — permanece em **32 PASS, 0 FAIL, 2 SKIP**, idêntico ao
+  resultado pré-correção, confirmando ausência de regressão nos casos de
   case-insensitive (Fase 1) e fuzzy (Fase 2) já cobertos.
 - **Pendente**: reexecutar os 100 registros da amostra anexada (ou o
   dataset completo, se disponível) contra o pipeline completo

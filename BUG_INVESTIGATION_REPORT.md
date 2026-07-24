@@ -1,12 +1,16 @@
 # Relatório de Investigação — VALOR_ORIGEM não corresponde ao campo de origem
 
-> **Status: corrigido.** Este documento registra o estado do código **antes**
-> da correção — mantido como evidência/histórico do diagnóstico. A correção
-> em si está em `BUG_FIX_PLAN.md` (itens P0, já implementados) e validada em
-> `test_bugfix_origem.py` (16/16 casos passam, cobrindo os 4 consumidores da
-> lógica corrigida). Os achados secundários das seções 5.1/5.2 (espaço em
-> branco, valores compostos) **continuam pendentes** (P2/P3 em
-> `BUG_FIX_PLAN.md`).
+> **Status: corrigido (achado principal e seção 5.1).** Este documento
+> registra o estado do código **antes** das correções — mantido como
+> evidência/histórico do diagnóstico. As correções em si estão em
+> `BUG_FIX_PLAN.md`:
+> - Achado principal (seções 1-4, campo vazio tratado como preenchido):
+>   itens P0, implementados e validados em `test_bugfix_origem.py`
+>   (16/16 casos, cobrindo os 4 consumidores da lógica corrigida).
+> - Achado secundário 5.1 (espaço em branco no início/fim): item P2,
+>   implementado e validado em `test_p2_whitespace_trim.py` (22/22 casos).
+> - Achado secundário 5.2 (valores compostos numa única célula): item P3,
+>   **continua pendente** — bloqueado por decisão de produto.
 >
 > Investigação apenas. Nenhuma alteração foi feita em `excel_to_sparql.py`
 > nem em nenhum outro arquivo do repositório **durante esta investigação**
