@@ -1,8 +1,16 @@
 # Plano de Correção — VALOR_ORIGEM/CAMPO_ORIGEM fabricados a partir de campo vazio
 
-> Plano apenas. Nenhum código foi alterado. Baseado nos achados de
-> `BUG_INVESTIGATION_REPORT.md`. Todas as linhas citadas são do estado atual
-> de `excel_to_sparql.py` (pós Fase 1 case-insensitive + Fase 2 fuzzy).
+> Baseado nos achados de `BUG_INVESTIGATION_REPORT.md`. Todas as linhas
+> citadas refletem o estado de `excel_to_sparql.py` **antes** da correção
+> (pós Fase 1 case-insensitive + Fase 2 fuzzy, pré-correção deste bug).
+>
+> **Status: itens P0 (seções 2.1-2.3) implementados e testados.** Ver
+> `test_bugfix_origem.py` (16/16 casos passam, cobrindo os 4 consumidores:
+> `_origem_agente_lines` diretamente, caminho universal via
+> `regra_complexa_agente_x70` Ramo A, `regra_agente_tox_qualquer_conteudo` e
+> `filtro_not_exists_agente`/X89) e a suíte principal (`run_tests.py`,
+> continua em 32 PASS/0 FAIL/2 SKIP, sem regressão). Itens P1/P2/P3
+> permanecem pendentes.
 
 ## 1. Recapitulação do problema
 
@@ -24,7 +32,7 @@ lugares com `STRLEN(STR(?var))>0` — a correção é aplicar o mesmo padrão no
 
 ## 2. Regiões do código a corrigir
 
-### 2.1 `SparqlClauseBuilder._origem_agente_lines` — **P0 (crítica)**
+### 2.1 `SparqlClauseBuilder._origem_agente_lines` — **P0 (crítica)** ✅ Implementado
 
 - **Linhas 740-745** (loop que monta `coalesce_val_args`/`coalesce_campo_args`):
   ```python
@@ -44,7 +52,7 @@ lugares com `STRLEN(STR(?var))>0` — a correção é aplicar o mesmo padrão no
   função corrige **ambos** os consumidores de uma vez — é o ponto de maior
   alavancagem (uma mudança, dois caminhos corrigidos).
 
-### 2.2 `SparqlClauseBuilder.regra_complexa_agente_x70` — Ramo A — **P0 (crítica)**
+### 2.2 `SparqlClauseBuilder.regra_complexa_agente_x70` — Ramo A — **P0 (crítica)** ✅ Implementado
 
 - **Linhas 1037-1042** (loop idêntico ao de 2.1, duplicado):
   ```python
@@ -63,7 +71,7 @@ lugares com `STRLEN(STR(?var))>0` — a correção é aplicar o mesmo padrão no
   casamento real contra a lista, não da lógica "primeiro preenchido". Não
   precisa de alteração.
 
-### 2.3 `SparqlClauseBuilder.regra_agente_tox_qualquer_conteudo` — **P0 (crítica)**
+### 2.3 `SparqlClauseBuilder.regra_agente_tox_qualquer_conteudo` — **P0 (crítica)** ✅ Implementado
 
 - **Linhas 1118-1122** (terceira cópia do mesmo loop):
   ```python
@@ -124,7 +132,8 @@ que o restante dessas funções referencia.
    correção, 3 locais). Baixo risco, corrige diretamente os 7 casos
    confirmados no `BUG_INVESTIGATION_REPORT.md` e a classe mais ampla de
    bug (mascaramento de campo posterior preenchido) demonstrada no teste
-   controlado da seção 3 daquele relatório.
+   controlado da seção 3 daquele relatório. **✅ Feito** — ver
+   `test_bugfix_origem.py` e a seção 5 abaixo.
 2. **P1 — Depois, opcional**: item 2.4 (eliminar a triplicação). Só depois
    de 2.1-2.3 estarem corrigidos e validados — não é pré-requisito, é
    redução de dívida técnica.
@@ -136,22 +145,32 @@ que o restante dessas funções referencia.
    célula (2.5b). Não colocar no roadmap de código até haver uma decisão
    de negócio sobre como tratar esses valores.
 
-## 5. Validação recomendada após a correção (P0)
+## 5. Validação realizada após a correção (P0)
 
-- Estender `TEST_CASES.json`/`run_tests.py` com casos que reproduzam os
-  cenários B e D do `BUG_INVESTIGATION_REPORT.md` (campo bound-mas-vazio
-  seguido de campo com conteúdo real; todos os campos bound-mas-vazios) —
-  hoje a suíte não cobre esse eixo (ela testa apenas conteúdo de string,
-  não a distinção ausente-vs-vazio no grafo).
-  - `funcao_alvo` a cobrir: `_origem_agente_lines` (usado pelo caminho
-    universal e por `filtro_not_exists_agente`), `regra_complexa_agente_x70`
-    Ramo A, `regra_agente_tox_qualquer_conteudo`.
-- Reexecutar os 100 registros da amostra anexada (ou o dataset completo,
-  se disponível) e confirmar que os 7 casos hoje com
-  `CAMPO_ORIGEM=intox:AGENTE_1`/`VALOR_ORIGEM=""` passam a não materializar
-  esses dois triplos (linhas em branco nessas colunas do CSV).
-- Conferir se existe algum consumidor downstream do CSV/grafo que assuma
-  que `CAMPO_ORIGEM`/`VALOR_ORIGEM` estão **sempre** presentes para todo
-  `intox:temInferencia` — a correção passa a omiti-los quando nenhum campo
-  tiver conteúdo real, o que é o comportamento documentado, mas é uma
-  mudança observável para quem consome a saída.
+- **✅ Feito**: `test_bugfix_origem.py` cobre os 4 cenários de
+  `BUG_INVESTIGATION_REPORT.md` (campo ausente + posterior preenchido;
+  1º campo bound-mas-vazio + posterior preenchido; nenhum campo presente;
+  todos os campos bound-mas-vazios) contra os **4 consumidores** da lógica
+  corrigida: `_origem_agente_lines` diretamente, `regra_complexa_agente_x70`
+  (Ramo A), `regra_agente_tox_qualquer_conteudo` e
+  `filtro_not_exists_agente` (rota X89, que também usa `_origem_agente_lines`
+  internamente). **16/16 casos passam.** Não reimplementa a lógica —
+  executa o SPARQL real gerado pelo código de produção contra um
+  `pyoxigraph.Store` sintético, igual ao padrão de `run_tests.py`.
+- **✅ Feito**: suíte principal (`python3 run_tests.py`) reexecutada após a
+  correção — permanece em **32 PASS, 0 FAIL, 2 SKIP**, idêntico ao resultado
+  pré-correção, confirmando ausência de regressão nos casos de
+  case-insensitive (Fase 1) e fuzzy (Fase 2) já cobertos.
+- **Pendente**: reexecutar os 100 registros da amostra anexada (ou o
+  dataset completo, se disponível) contra o pipeline completo
+  (`excel_to_sparql.py` + ontologia + planilha reais) e confirmar que os 7
+  casos que hoje mostram `CAMPO_ORIGEM=intox:AGENTE_1`/`VALOR_ORIGEM=""`
+  passam a não materializar esses dois triplos — não foi possível validar
+  isso end-to-end nesta correção porque a planilha/ontologia/parquet reais
+  não estão disponíveis neste repositório (só o CSV de amostra e sua saída,
+  usados na investigação).
+- **Pendente**: conferir se existe algum consumidor downstream do CSV/grafo
+  que assuma que `CAMPO_ORIGEM`/`VALOR_ORIGEM` estão **sempre** presentes
+  para todo `intox:temInferencia` — a correção passa a omiti-los quando
+  nenhum campo tiver conteúdo real, o que é o comportamento documentado,
+  mas é uma mudança observável para quem consome a saída.

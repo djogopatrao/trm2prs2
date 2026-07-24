@@ -1,8 +1,17 @@
 # Relatório de Investigação — VALOR_ORIGEM não corresponde ao campo de origem
 
+> **Status: corrigido.** Este documento registra o estado do código **antes**
+> da correção — mantido como evidência/histórico do diagnóstico. A correção
+> em si está em `BUG_FIX_PLAN.md` (itens P0, já implementados) e validada em
+> `test_bugfix_origem.py` (16/16 casos passam, cobrindo os 4 consumidores da
+> lógica corrigida). Os achados secundários das seções 5.1/5.2 (espaço em
+> branco, valores compostos) **continuam pendentes** (P2/P3 em
+> `BUG_FIX_PLAN.md`).
+>
 > Investigação apenas. Nenhuma alteração foi feita em `excel_to_sparql.py`
-> nem em nenhum outro arquivo do repositório. Todas as evidências abaixo vêm
-> de (1) inspeção cruzada dos dois CSVs anexados
+> nem em nenhum outro arquivo do repositório **durante esta investigação**
+> (a correção veio depois, num commit separado). Todas as evidências abaixo
+> vêm de (1) inspeção cruzada dos dois CSVs anexados
 > (`IEXOBR19_PREPARADO_100.csv` = entrada, `IEXOBR19_PREPARADO_100_inferido.csv`
 > = saída da query) e (2) execução isolada, via `pyoxigraph`, do trecho de
 > SPARQL realmente gerado por `SparqlClauseBuilder._origem_agente_lines`

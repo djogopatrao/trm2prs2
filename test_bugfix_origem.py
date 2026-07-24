@@ -131,8 +131,51 @@ def test_agente_tox_qualquer_conteudo() -> list[tuple[str, bool, str]]:
     return resultados
 
 
+def test_filtro_not_exists_agente_origem_x89() -> list[tuple[str, bool, str]]:
+    """
+    Cobre o segundo consumidor de _origem_agente_lines: filtro_not_exists_agente
+    (rota X89), quando chamado com inferred_value definido (popula
+    builder.origem_x89). not_empty=False e padroes_irmas com listas vazias
+    para que o FILTER NOT EXISTS nunca exclua o registro, isolando o teste
+    na parte de origem.
+    """
+    resultados = []
+    campos = SparqlClauseBuilder._CAMPOS_AGENTE_PADRAO
+    for cid, desc, quads, campo_esp, valor_esp in CASOS:
+        counter = SparqlVarCounter()
+        # Nota: term_lists NÃO pode usar "termos": [] aqui — in_clause([])
+        # gera 'IN ( "")' (um conjunto com a string vazia), não um conjunto
+        # vazio, o que faria o valor "" (campo presente-mas-vazio) bater por
+        # acidente. Usamos um termo placeholder que nunca aparece nos dados.
+        term_lists = {f"intox:lista_{n}": {"rdf:label": f"LISTA {n}", "termos": ["zzz_termo_inexistente"]}
+                      for n in (21, 22, 23, 24, 28, 29)}
+        builder = SparqlClauseBuilder(counter, term_lists)
+        lines = builder.filtro_not_exists_agente(
+            ";".join(campos), not_empty=False, padroes_irmas=None,
+            inferred_value=f"X{cid}", campos_agente=campos,
+        )
+        # Em produção, ?AGENTE_TOX_value (referenciado dentro do FILTER NOT
+        # EXISTS) já vem vinculado por um campo categórico processado antes
+        # na mesma regra — reproduzimos isso aqui com uma categoria neutra
+        # (99), que não participa de nenhuma das disjunções do fallback.
+        lines = ["\t?registro intox:AGENTE_TOX ?AGENTE_TOX_value."] + lines
+        store = _store(quads + [("AGENTE_TOX", "intox:categoria_AGENTE_TOX_99")])
+        campo, valor = _select_origem(store, lines, builder.origem_x89["campo"], builder.origem_x89["valor"])
+        ok = (campo == campo_esp) and (valor == valor_esp)
+        resultados.append((
+            f"filtro_not_exists_agente (origem_x89) [{cid}] {desc}", ok,
+            f"esperado=({campo_esp!r},{valor_esp!r}) obtido=({campo!r},{valor!r})",
+        ))
+    return resultados
+
+
 def main() -> int:
-    todos = test_origem_agente_lines() + test_x70_ramo_a() + test_agente_tox_qualquer_conteudo()
+    todos = (
+        test_origem_agente_lines()
+        + test_x70_ramo_a()
+        + test_agente_tox_qualquer_conteudo()
+        + test_filtro_not_exists_agente_origem_x89()
+    )
     falhas = 0
     for nome, ok, detalhe in todos:
         marker = "✓" if ok else "✗"

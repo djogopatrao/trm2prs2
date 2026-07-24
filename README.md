@@ -14,6 +14,9 @@ As queries geradas são pensadas para execução com **pyoxigraph**.
 | `FUZZY_IMPLEMENTATION_REPORT.md` | Relatório da primeira rodada de implementação/testes da Fase 2 (histórico — o defeito de dado do `FUZZY-12` relatado ali já foi corrigido em `TEST_CASES.json`). |
 | `TEST_CASES.json` | 34 casos de teste (`LEGACY`, `CASE`, `FUZZY`) para validar o matching de termos, cobrindo os 8 pontos do código identificados no plano. |
 | `run_tests.py` | Executa `TEST_CASES.json` contra a implementação real, rodando as cláusulas SPARQL geradas em um `pyoxigraph.Store` isolado por caso, **nos dois algoritmos** (fuzzy e não-fuzzy) para todo caso com adaptador — não reimplementa a lógica de matching. |
+| `BUG_INVESTIGATION_REPORT.md` | Investigação de um bug relatado em dados reais: `CAMPO_ORIGEM`/`VALOR_ORIGEM` às vezes eram fabricados a partir de um campo vazio. Documento histórico (estado pré-correção) — a correção já foi aplicada, ver os dois arquivos abaixo. |
+| `BUG_FIX_PLAN.md` | Plano de correção do bug acima: 3 regiões de código com o mesmo defeito, risco de regressão e priorização (P0 já implementado; P1-P3 pendentes). |
+| `test_bugfix_origem.py` | Testes dedicados à correção do bug de `CAMPO_ORIGEM`/`VALOR_ORIGEM` — 16 casos cobrindo os 4 consumidores da lógica corrigida (campo ausente vs. presente-mas-vazio, com e sem campo posterior preenchido). |
 | `requirements.txt` | Dependências para rodar o gerador e os testes. |
 
 ## Status da implementação
@@ -32,6 +35,14 @@ As queries geradas são pensadas para execução com **pyoxigraph**.
   `FUZZY_IMPLEMENTATION_REPORT.md` para os achados da implementação
   (incluindo um caminho ainda não coberto por teste, `filter_list_agente_origem`,
   e uma ambiguidade de escopo identificada em `regra_local_exposicao`).
+- ✅ **Correção de bug — origem fabricada a partir de campo vazio**: a lógica
+  de "primeiro campo de agente preenchido" (`_origem_agente_lines`,
+  `regra_complexa_agente_x70` Ramo A, `regra_agente_tox_qualquer_conteudo`)
+  usava só `BOUND()`, que não distingue campo ausente de campo presente com
+  valor vazio — corrigido acrescentando `STRLEN(STR(...))>0` às 3
+  ocorrências. Ver `BUG_INVESTIGATION_REPORT.md` (diagnóstico),
+  `BUG_FIX_PLAN.md` (plano, P0 concluído) e `test_bugfix_origem.py`
+  (16/16 casos, sem regressão na suíte principal).
 
 ## Como rodar
 
